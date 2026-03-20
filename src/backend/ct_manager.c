@@ -80,56 +80,7 @@ bool ct_backend_connect(AppData *app) {
     return false;
 }
 
-/* ── Generic REST API request to Incus/LXD ─────────────────── */
-char *ct_api_request(AppData *app, const char *method,
-                     const char *endpoint, const char *body) {
-    if (!app->incus_available) return NULL;
-
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
-
-    HttpBuffer buf = { .data = malloc(1), .size = 0 };
-
-    char url[1024];
-    snprintf(url, sizeof(url), "http://localhost%s", endpoint);
-
-    curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, app->incus_socket_path);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    if (strcmp(method, "POST") == 0) {
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        if (body) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-        else curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
-    } else if (strcmp(method, "PUT") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-        if (body) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    } else if (strcmp(method, "DELETE") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    } else if (strcmp(method, "PATCH") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-        if (body) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        free(buf.data);
-        return NULL;
-    }
-
-    return buf.data;
-}
-
-/* ── Generic REST API request to Incus/LXD with custom timeout ── */
+/* ── Generic REST API request to Incus/LXD with configurable timeout ── */
 char *ct_api_request_timeout(AppData *app, const char *method,
                              const char *endpoint, const char *body,
                              long timeout_sec) {
@@ -178,6 +129,12 @@ char *ct_api_request_timeout(AppData *app, const char *method,
     }
 
     return buf.data;
+}
+
+/* ── Convenience wrapper with default 10s timeout ──────────── */
+char *ct_api_request(AppData *app, const char *method,
+                     const char *endpoint, const char *body) {
+    return ct_api_request_timeout(app, method, endpoint, body, 10L);
 }
 
 /* ── Wait for API Operation ────────────────────────────────── */

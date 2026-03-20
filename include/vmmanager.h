@@ -6,6 +6,10 @@
  * License: GPL-3.0
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #ifndef VMMANAGER_H
 #define VMMANAGER_H
 
@@ -27,7 +31,7 @@
 /* ── Application Constants ─────────────────────────────────── */
 #define APP_ID           "com.tripletech.vmmanager"
 #define APP_NAME         "VMManager"
-#define APP_VERSION      "1.0.0"
+#define APP_VERSION      "2.0.0"
 #define INCUS_SOCKET     "/var/lib/incus/unix.socket"
 #define LXD_SOCKET       "/var/snap/lxd/common/lxd/unix.socket"
 #define REFRESH_INTERVAL 3000
@@ -89,6 +93,27 @@ typedef struct {
     size_t  size;
 } HttpBuffer;
 
+/* ── Search/Filter ─────────────────────────────────────────── */
+typedef enum {
+    FILTER_ALL,
+    FILTER_RUNNING,
+    FILTER_STOPPED,
+    FILTER_PAUSED
+} FilterState;
+
+/* ── Settings ──────────────────────────────────────────────── */
+typedef struct {
+    int      refresh_interval_ms;
+    bool     confirm_destructive_actions;
+    bool     auto_refresh;
+    char     default_iso_path[512];
+    char     default_image[128];
+    int      default_vcpus;
+    int      default_ram_mb;
+    int      default_disk_gb;
+    bool     loaded;
+} AppSettings;
+
 /* ── Main Application Structure ────────────────────────────── */
 typedef struct {
     GtkApplication  *app;
@@ -133,6 +158,15 @@ typedef struct {
     int              ct_count;
     SystemStats      stats;
     guint            refresh_timer;
+
+    /* Settings */
+    AppSettings      settings;
+
+    /* Filter state */
+    FilterState      vm_filter;
+    char             vm_search[256];
+    FilterState      ct_filter;
+    char             ct_search[256];
 } AppData;
 
 /* ── VM Backend ────────────────────────────────────────────── */
@@ -162,6 +196,9 @@ bool        ct_delete(AppData *app, const char *name);
 bool        ct_create(AppData *app, const char *name, const char *image);
 char       *ct_api_request(AppData *app, const char *method,
                            const char *endpoint, const char *body);
+char       *ct_api_request_timeout(AppData *app, const char *method,
+                           const char *endpoint, const char *body,
+                           long timeout_sec);
 const char *ct_state_str(CtState s);
 const char *ct_state_css(CtState s);
 
@@ -240,13 +277,6 @@ void              ui_loading_end(LoadingIndicator *loader);
 void              ui_loading_update(LoadingIndicator *loader, const char *message);
 
 /* ── Search/Filter ─────────────────────────────────────────── */
-typedef enum {
-    FILTER_ALL,
-    FILTER_RUNNING,
-    FILTER_STOPPED,
-    FILTER_PAUSED
-} FilterState;
-
 void        ui_set_vm_filter(AppData *app, FilterState filter, const char *search);
 void        ui_set_ct_filter(AppData *app, FilterState filter, const char *search);
 
@@ -263,18 +293,6 @@ bool        vm_snapshot_delete(AppData *app, const char *vm_name, const char *sn
 VmSnapshot *vm_snapshot_list(AppData *app, const char *vm_name, int *count);
 void        ui_show_snapshot_dialog(AppData *app, const char *vm_name);
 
-/* ── Settings ──────────────────────────────────────────────── */
-typedef struct {
-    int      refresh_interval_ms;
-    bool     confirm_destructive_actions;
-    bool     auto_refresh;
-    char     default_iso_path[512];
-    char     default_image[128];
-    int      default_vcpus;
-    int      default_ram_mb;
-    int      default_disk_gb;
-} AppSettings;
-
 void        settings_load(AppData *app);
 void        settings_save(AppData *app);
 void        ui_show_settings_dialog(AppData *app);
@@ -285,11 +303,5 @@ void        ui_setup_shortcuts(AppData *app);
 /* ── Console/Terminal ──────────────────────────────────────── */
 void        ui_open_vm_console(AppData *app, const char *vm_name);
 void        ui_open_ct_console(AppData *app, const char *ct_name);
-
-/* ── Batch Operations ──────────────────────────────────────── */
-bool        vm_batch_start(AppData *app, char **names, int count);
-bool        vm_batch_stop(AppData *app, char **names, int count);
-bool        ct_batch_start(AppData *app, char **names, int count);
-bool        ct_batch_stop(AppData *app, char **names, int count);
 
 #endif

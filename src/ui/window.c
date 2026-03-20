@@ -278,9 +278,9 @@ static void on_vm_force_stop(GtkButton *btn, gpointer data) {
     
     ConfirmActionCtx *confirm_ctx = g_new0(ConfirmActionCtx, 1);
     confirm_ctx->app = ctx->app;
-    strncpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name) - 1);
+    g_strlcpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name));
     
-    char message[256];
+    char message[512];
     snprintf(message, sizeof(message), "Force stop will immediately kill VM '%s' without graceful shutdown. Continue?", ctx->name);
     
     ui_show_confirm_dialog(ctx->app, "Force Stop Virtual Machine", message,
@@ -322,9 +322,9 @@ static void on_vm_delete(GtkButton *btn, gpointer data) {
     
     ConfirmActionCtx *confirm_ctx = g_new0(ConfirmActionCtx, 1);
     confirm_ctx->app = ctx->app;
-    strncpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name) - 1);
+    g_strlcpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name));
     
-    char message[256];
+    char message[512];
     snprintf(message, sizeof(message), "Are you sure you want to delete VM '%s'?", ctx->name);
     
     ui_show_confirm_dialog(ctx->app, "Delete Virtual Machine", message,
@@ -505,6 +505,15 @@ static void on_vm_create_confirm(GtkButton *btn, gpointer data) {
         }
     }
 
+    /* Validate ISO file if provided */
+    if (iso && strlen(iso) > 0 && access(iso, R_OK) != 0) {
+        app_log(ctx->app, "WARN", "ISO file not found or not readable: %s", iso);
+        ui_show_error_dialog(ctx->app, "Invalid ISO Path",
+            "The specified ISO file does not exist or is not readable.",
+            "Check the path and ensure the file exists.");
+        return;
+    }
+
     vm_create(ctx->app, name, vcpus, ram, disk, iso);
     vm_backend_refresh(ctx->app);
     ui_refresh_vm_list(ctx->app);
@@ -570,7 +579,8 @@ void ui_show_vm_create_dialog(AppData *app) {
     gtk_box_append(GTK_BOX(form), vcpu_label);
     
     ctx->vcpu_spin = gtk_spin_button_new_with_range(1, 16, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->vcpu_spin), 2);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->vcpu_spin),
+        app->settings.loaded ? app->settings.default_vcpus : 2);
     gtk_box_append(GTK_BOX(form), ctx->vcpu_spin);
 
     /* RAM */
@@ -578,9 +588,10 @@ void ui_show_vm_create_dialog(AppData *app) {
     gtk_widget_add_css_class(ram_label, "dialog-label");
     gtk_label_set_xalign(GTK_LABEL(ram_label), 0);
     gtk_box_append(GTK_BOX(form), ram_label);
-    
+
     ctx->ram_spin = gtk_spin_button_new_with_range(256, 32768, 256);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->ram_spin), 2048);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->ram_spin),
+        app->settings.loaded ? app->settings.default_ram_mb : 2048);
     gtk_box_append(GTK_BOX(form), ctx->ram_spin);
 
     /* Disk */
@@ -588,9 +599,10 @@ void ui_show_vm_create_dialog(AppData *app) {
     gtk_widget_add_css_class(disk_label, "dialog-label");
     gtk_label_set_xalign(GTK_LABEL(disk_label), 0);
     gtk_box_append(GTK_BOX(form), disk_label);
-    
+
     ctx->disk_spin = gtk_spin_button_new_with_range(5, 500, 5);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->disk_spin), 20);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->disk_spin),
+        app->settings.loaded ? app->settings.default_disk_gb : 20);
     gtk_box_append(GTK_BOX(form), ctx->disk_spin);
 
     /* ISO */
@@ -629,6 +641,27 @@ void ui_show_vm_create_dialog(AppData *app) {
 
     gtk_window_set_child(GTK_WINDOW(dialog), main_box);
     gtk_window_present(GTK_WINDOW(dialog));
+}
+
+/* ── VM search/filter callbacks ─────────────────────────────── */
+static void on_vm_search_changed(GtkEditable *entry, gpointer data) {
+    AppData *app = data;
+    const char *text = gtk_editable_get_text(entry);
+    strncpy(app->vm_search, text ? text : "", sizeof(app->vm_search) - 1);
+    ui_refresh_vm_list(app);
+}
+
+static void on_vm_filter_all(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_vm_filter((AppData *)data, FILTER_ALL, NULL);
+}
+static void on_vm_filter_running(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_vm_filter((AppData *)data, FILTER_RUNNING, NULL);
+}
+static void on_vm_filter_stopped(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_vm_filter((AppData *)data, FILTER_STOPPED, NULL);
 }
 
 /* ── Build VM Panel ────────────────────────────────────────── */
@@ -685,26 +718,28 @@ GtkWidget *ui_build_vm_panel(AppData *app) {
     gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), "Search VMs...");
     gtk_widget_add_css_class(search_entry, "search-entry");
     gtk_widget_set_hexpand(search_entry, TRUE);
-    g_object_set_data(G_OBJECT(outer_box), "vm-search-entry", search_entry);
+    g_signal_connect(search_entry, "changed", G_CALLBACK(on_vm_search_changed), app);
     gtk_box_append(GTK_BOX(search_box), search_entry);
 
     gtk_box_append(GTK_BOX(filter_box), search_box);
 
-    /* Filter buttons */
+    /* Filter buttons (grouped) */
     GtkWidget *all_btn = gtk_toggle_button_new_with_label("All");
     gtk_widget_add_css_class(all_btn, "filter-btn");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(all_btn), TRUE);
-    g_object_set_data(G_OBJECT(outer_box), "vm-filter-all", all_btn);
+    g_signal_connect(all_btn, "toggled", G_CALLBACK(on_vm_filter_all), app);
     gtk_box_append(GTK_BOX(filter_box), all_btn);
 
     GtkWidget *running_btn = gtk_toggle_button_new_with_label("Running");
     gtk_widget_add_css_class(running_btn, "filter-btn");
-    g_object_set_data(G_OBJECT(outer_box), "vm-filter-running", running_btn);
+    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(running_btn), GTK_TOGGLE_BUTTON(all_btn));
+    g_signal_connect(running_btn, "toggled", G_CALLBACK(on_vm_filter_running), app);
     gtk_box_append(GTK_BOX(filter_box), running_btn);
 
     GtkWidget *stopped_btn = gtk_toggle_button_new_with_label("Stopped");
     gtk_widget_add_css_class(stopped_btn, "filter-btn");
-    g_object_set_data(G_OBJECT(outer_box), "vm-filter-stopped", stopped_btn);
+    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(stopped_btn), GTK_TOGGLE_BUTTON(all_btn));
+    g_signal_connect(stopped_btn, "toggled", G_CALLBACK(on_vm_filter_stopped), app);
     gtk_box_append(GTK_BOX(filter_box), stopped_btn);
 
     gtk_box_append(GTK_BOX(outer_box), filter_box);
@@ -720,6 +755,22 @@ GtkWidget *ui_build_vm_panel(AppData *app) {
     return scroll;
 }
 
+/* ── Check if VM matches current filter ────────────────────── */
+static bool vm_matches_filter(AppData *app, VmInfo *vm) {
+    /* State filter */
+    switch (app->vm_filter) {
+        case FILTER_RUNNING: if (vm->state != VM_STATE_RUNNING) return false; break;
+        case FILTER_STOPPED: if (vm->state != VM_STATE_SHUTOFF) return false; break;
+        case FILTER_PAUSED:  if (vm->state != VM_STATE_PAUSED) return false; break;
+        default: break;
+    }
+    /* Search filter */
+    if (app->vm_search[0]) {
+        if (!strcasestr(vm->name, app->vm_search)) return false;
+    }
+    return true;
+}
+
 /* ── Refresh VM list UI ────────────────────────────────────── */
 void ui_refresh_vm_list(AppData *app) {
     if (!app->vm_list_box) return;
@@ -729,22 +780,39 @@ void ui_refresh_vm_list(AppData *app) {
     while ((child = gtk_widget_get_first_child(app->vm_list_box)))
         gtk_box_remove(GTK_BOX(app->vm_list_box), child);
 
-    /* Note: vm_backend_refresh() should be called separately before this */
+    int shown = 0;
+    if (app->vm_count > 0) {
+        for (int i = 0; i < app->vm_count; i++) {
+            if (vm_matches_filter(app, &app->vms[i])) {
+                gtk_box_append(GTK_BOX(app->vm_list_box), make_vm_row(app, &app->vms[i]));
+                shown++;
+            }
+        }
+    }
 
-    if (app->vm_count == 0) {
-        GtkWidget *empty = gtk_label_new("No virtual machines found. Create one to get started.");
+    if (shown == 0) {
+        const char *msg = app->vm_count == 0
+            ? "No virtual machines found. Create one to get started."
+            : "No VMs match the current filter.";
+        GtkWidget *empty = gtk_label_new(msg);
         gtk_widget_add_css_class(empty, "section-subtitle");
         gtk_box_append(GTK_BOX(app->vm_list_box), empty);
-    } else {
-        for (int i = 0; i < app->vm_count; i++) {
-            gtk_box_append(GTK_BOX(app->vm_list_box), make_vm_row(app, &app->vms[i]));
-        }
     }
 
     char status[64];
     snprintf(status, sizeof(status), "%d running / %d total",
              app->stats.running_vms, app->stats.total_vms);
     gtk_label_set_text(GTK_LABEL(app->vm_status_label), status);
+}
+
+/* ── Set VM filter ─────────────────────────────────────────── */
+void ui_set_vm_filter(AppData *app, FilterState filter, const char *search) {
+    app->vm_filter = filter;
+    if (search)
+        strncpy(app->vm_search, search, sizeof(app->vm_search) - 1);
+    else
+        app->vm_search[0] = '\0';
+    ui_refresh_vm_list(app);
 }
 
 /* ──────────────────────────────────────────────────────────── */
@@ -776,9 +844,9 @@ static void on_ct_force_stop(GtkButton *btn, gpointer data) {
     
     ConfirmActionCtx *confirm_ctx = g_new0(ConfirmActionCtx, 1);
     confirm_ctx->app = ctx->app;
-    strncpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name) - 1);
+    g_strlcpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name));
     
-    char message[256];
+    char message[512];
     snprintf(message, sizeof(message), "Force stop will immediately kill container '%s'. Continue?", ctx->name);
     
     ui_show_confirm_dialog(ctx->app, "Force Stop Container", message,
@@ -804,9 +872,9 @@ static void on_ct_delete(GtkButton *btn, gpointer data) {
     
     ConfirmActionCtx *confirm_ctx = g_new0(ConfirmActionCtx, 1);
     confirm_ctx->app = ctx->app;
-    strncpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name) - 1);
+    g_strlcpy(confirm_ctx->name, ctx->name, sizeof(confirm_ctx->name));
     
-    char message[256];
+    char message[512];
     snprintf(message, sizeof(message), "Are you sure you want to delete container '%s'?", ctx->name);
     
     ui_show_confirm_dialog(ctx->app, "Delete Container", message,
@@ -914,6 +982,27 @@ static GtkWidget *make_ct_row(AppData *app, CtInfo *ct) {
 
     gtk_box_append(GTK_BOX(row), btn_box);
     return row;
+}
+
+/* ── CT search/filter callbacks ─────────────────────────────── */
+static void on_ct_search_changed(GtkEditable *entry, gpointer data) {
+    AppData *app = data;
+    const char *text = gtk_editable_get_text(entry);
+    strncpy(app->ct_search, text ? text : "", sizeof(app->ct_search) - 1);
+    ui_refresh_ct_list(app);
+}
+
+static void on_ct_filter_all(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_ct_filter((AppData *)data, FILTER_ALL, NULL);
+}
+static void on_ct_filter_running(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_ct_filter((AppData *)data, FILTER_RUNNING, NULL);
+}
+static void on_ct_filter_stopped(GtkToggleButton *btn, gpointer data) {
+    if (!gtk_toggle_button_get_active(btn)) return;
+    ui_set_ct_filter((AppData *)data, FILTER_STOPPED, NULL);
 }
 
 /* ── Container Create Dialog ───────────────────────────────── */
@@ -1094,31 +1183,33 @@ GtkWidget *ui_build_ct_panel(AppData *app) {
     GtkWidget *search_icon = gtk_image_new_from_icon_name("system-search-symbolic");
     gtk_box_append(GTK_BOX(search_box), search_icon);
 
-    GtkWidget *search_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), "Search containers...");
-    gtk_widget_add_css_class(search_entry, "search-entry");
-    gtk_widget_set_hexpand(search_entry, TRUE);
-    g_object_set_data(G_OBJECT(outer_box), "ct-search-entry", search_entry);
-    gtk_box_append(GTK_BOX(search_box), search_entry);
+    GtkWidget *ct_search_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ct_search_entry), "Search containers...");
+    gtk_widget_add_css_class(ct_search_entry, "search-entry");
+    gtk_widget_set_hexpand(ct_search_entry, TRUE);
+    g_signal_connect(ct_search_entry, "changed", G_CALLBACK(on_ct_search_changed), app);
+    gtk_box_append(GTK_BOX(search_box), ct_search_entry);
 
     gtk_box_append(GTK_BOX(filter_box), search_box);
 
-    /* Filter buttons */
-    GtkWidget *all_btn = gtk_toggle_button_new_with_label("All");
-    gtk_widget_add_css_class(all_btn, "filter-btn");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(all_btn), TRUE);
-    g_object_set_data(G_OBJECT(outer_box), "ct-filter-all", all_btn);
-    gtk_box_append(GTK_BOX(filter_box), all_btn);
+    /* Filter buttons (grouped) */
+    GtkWidget *ct_all_btn = gtk_toggle_button_new_with_label("All");
+    gtk_widget_add_css_class(ct_all_btn, "filter-btn");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ct_all_btn), TRUE);
+    g_signal_connect(ct_all_btn, "toggled", G_CALLBACK(on_ct_filter_all), app);
+    gtk_box_append(GTK_BOX(filter_box), ct_all_btn);
 
-    GtkWidget *running_btn = gtk_toggle_button_new_with_label("Running");
-    gtk_widget_add_css_class(running_btn, "filter-btn");
-    g_object_set_data(G_OBJECT(outer_box), "ct-filter-running", running_btn);
-    gtk_box_append(GTK_BOX(filter_box), running_btn);
+    GtkWidget *ct_running_btn = gtk_toggle_button_new_with_label("Running");
+    gtk_widget_add_css_class(ct_running_btn, "filter-btn");
+    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(ct_running_btn), GTK_TOGGLE_BUTTON(ct_all_btn));
+    g_signal_connect(ct_running_btn, "toggled", G_CALLBACK(on_ct_filter_running), app);
+    gtk_box_append(GTK_BOX(filter_box), ct_running_btn);
 
-    GtkWidget *stopped_btn = gtk_toggle_button_new_with_label("Stopped");
-    gtk_widget_add_css_class(stopped_btn, "filter-btn");
-    g_object_set_data(G_OBJECT(outer_box), "ct-filter-stopped", stopped_btn);
-    gtk_box_append(GTK_BOX(filter_box), stopped_btn);
+    GtkWidget *ct_stopped_btn = gtk_toggle_button_new_with_label("Stopped");
+    gtk_widget_add_css_class(ct_stopped_btn, "filter-btn");
+    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(ct_stopped_btn), GTK_TOGGLE_BUTTON(ct_all_btn));
+    g_signal_connect(ct_stopped_btn, "toggled", G_CALLBACK(on_ct_filter_stopped), app);
+    gtk_box_append(GTK_BOX(filter_box), ct_stopped_btn);
 
     gtk_box_append(GTK_BOX(outer_box), filter_box);
 
@@ -1132,6 +1223,20 @@ GtkWidget *ui_build_ct_panel(AppData *app) {
     return scroll;
 }
 
+/* ── Check if container matches current filter ─────────────── */
+static bool ct_matches_filter(AppData *app, CtInfo *ct) {
+    switch (app->ct_filter) {
+        case FILTER_RUNNING: if (ct->state != CT_STATE_RUNNING) return false; break;
+        case FILTER_STOPPED: if (ct->state != CT_STATE_STOPPED) return false; break;
+        case FILTER_PAUSED:  if (ct->state != CT_STATE_FROZEN) return false; break;
+        default: break;
+    }
+    if (app->ct_search[0]) {
+        if (!strcasestr(ct->name, app->ct_search)) return false;
+    }
+    return true;
+}
+
 void ui_refresh_ct_list(AppData *app) {
     if (!app->ct_list_box) return;
 
@@ -1139,21 +1244,27 @@ void ui_refresh_ct_list(AppData *app) {
     while ((child = gtk_widget_get_first_child(app->ct_list_box)))
         gtk_box_remove(GTK_BOX(app->ct_list_box), child);
 
-    /* Note: ct_backend_refresh() should be called separately before this */
-
     if (!app->incus_available) {
         GtkWidget *msg = gtk_label_new(
             "Incus/LXD not detected. Install Incus and ensure the socket is accessible.");
         gtk_widget_add_css_class(msg, "section-subtitle");
         gtk_box_append(GTK_BOX(app->ct_list_box), msg);
-    } else if (app->ct_count == 0) {
-        GtkWidget *empty = gtk_label_new("No containers found. Create one to get started.");
-        gtk_widget_add_css_class(empty, "section-subtitle");
-        gtk_box_append(GTK_BOX(app->ct_list_box), empty);
     } else {
+        int shown = 0;
         for (int i = 0; i < app->ct_count; i++) {
-            gtk_box_append(GTK_BOX(app->ct_list_box),
-                           make_ct_row(app, &app->containers[i]));
+            if (ct_matches_filter(app, &app->containers[i])) {
+                gtk_box_append(GTK_BOX(app->ct_list_box),
+                               make_ct_row(app, &app->containers[i]));
+                shown++;
+            }
+        }
+        if (shown == 0) {
+            const char *msg_text = app->ct_count == 0
+                ? "No containers found. Create one to get started."
+                : "No containers match the current filter.";
+            GtkWidget *empty = gtk_label_new(msg_text);
+            gtk_widget_add_css_class(empty, "section-subtitle");
+            gtk_box_append(GTK_BOX(app->ct_list_box), empty);
         }
     }
 
@@ -1163,9 +1274,58 @@ void ui_refresh_ct_list(AppData *app) {
     gtk_label_set_text(GTK_LABEL(app->ct_status_label), status);
 }
 
+/* ── Set container filter ──────────────────────────────────── */
+void ui_set_ct_filter(AppData *app, FilterState filter, const char *search) {
+    app->ct_filter = filter;
+    if (search)
+        strncpy(app->ct_search, search, sizeof(app->ct_search) - 1);
+    else
+        app->ct_search[0] = '\0';
+    ui_refresh_ct_list(app);
+}
+
 /* ──────────────────────────────────────────────────────────── */
 /* ── Log Panel ─────────────────────────────────────────────── */
 /* ──────────────────────────────────────────────────────────── */
+
+static void on_log_clear(GtkButton *btn, gpointer data) {
+    (void)btn;
+    AppData *app = data;
+    GtkTextIter start, end;
+    gtk_text_buffer_get_start_iter(app->log_buffer, &start);
+    gtk_text_buffer_get_end_iter(app->log_buffer, &end);
+    gtk_text_buffer_delete(app->log_buffer, &start, &end);
+    app_log(app, "INFO", "Log cleared");
+}
+
+static void on_log_export(GtkButton *btn, gpointer data) {
+    (void)btn;
+    AppData *app = data;
+
+    char path[512];
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    snprintf(path, sizeof(path), "%s/vmmanager-log-%04d%02d%02d-%02d%02d%02d.txt",
+             home, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+
+    GtkTextIter start, end;
+    gtk_text_buffer_get_start_iter(app->log_buffer, &start);
+    gtk_text_buffer_get_end_iter(app->log_buffer, &end);
+    char *text = gtk_text_buffer_get_text(app->log_buffer, &start, &end, FALSE);
+
+    GError *error = NULL;
+    if (g_file_set_contents(path, text, -1, &error)) {
+        app_log(app, "INFO", "Log exported to %s", path);
+    } else {
+        app_log(app, "ERROR", "Failed to export log: %s", error->message);
+        g_error_free(error);
+    }
+    g_free(text);
+}
 
 GtkWidget *ui_build_log_panel(AppData *app) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
@@ -1174,15 +1334,39 @@ GtkWidget *ui_build_log_panel(AppData *app) {
     gtk_widget_set_margin_top(box, 24);
     gtk_widget_set_margin_bottom(box, 24);
 
+    /* Header row with title and action buttons */
+    GtkWidget *header_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+
+    GtkWidget *title_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_hexpand(title_box, TRUE);
+
     GtkWidget *title = gtk_label_new("Activity Log");
     gtk_widget_add_css_class(title, "section-title");
     gtk_label_set_xalign(GTK_LABEL(title), 0);
-    gtk_box_append(GTK_BOX(box), title);
+    gtk_box_append(GTK_BOX(title_box), title);
 
     GtkWidget *subtitle = gtk_label_new("Application events and operation history");
     gtk_widget_add_css_class(subtitle, "section-subtitle");
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0);
-    gtk_box_append(GTK_BOX(box), subtitle);
+    gtk_box_append(GTK_BOX(title_box), subtitle);
+
+    gtk_box_append(GTK_BOX(header_row), title_box);
+
+    GtkWidget *export_btn = gtk_button_new_with_label("Export");
+    gtk_widget_add_css_class(export_btn, "btn-action");
+    gtk_widget_add_css_class(export_btn, "btn-start");
+    gtk_widget_set_valign(export_btn, GTK_ALIGN_CENTER);
+    g_signal_connect(export_btn, "clicked", G_CALLBACK(on_log_export), app);
+    gtk_box_append(GTK_BOX(header_row), export_btn);
+
+    GtkWidget *clear_btn = gtk_button_new_with_label("Clear");
+    gtk_widget_add_css_class(clear_btn, "btn-action");
+    gtk_widget_add_css_class(clear_btn, "btn-delete");
+    gtk_widget_set_valign(clear_btn, GTK_ALIGN_CENTER);
+    g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_log_clear), app);
+    gtk_box_append(GTK_BOX(header_row), clear_btn);
+
+    gtk_box_append(GTK_BOX(box), header_row);
 
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
@@ -1315,6 +1499,19 @@ GtkWidget *ui_build_sidebar(AppData *app) {
     gtk_widget_set_vexpand(spacer, TRUE);
     gtk_box_append(GTK_BOX(sidebar), spacer);
 
+    /* Settings button */
+    GtkWidget *settings_btn = gtk_button_new_with_label("Settings");
+    gtk_widget_add_css_class(settings_btn, "sidebar-btn");
+    g_signal_connect_swapped(settings_btn, "clicked",
+                             G_CALLBACK(ui_show_settings_dialog), app);
+    gtk_box_append(GTK_BOX(sidebar), settings_btn);
+
+    /* Keyboard shortcut hints */
+    GtkWidget *shortcuts = gtk_label_new("F5 Refresh | Ctrl+, Settings");
+    gtk_widget_add_css_class(shortcuts, "sidebar-version");
+    gtk_label_set_xalign(GTK_LABEL(shortcuts), 0);
+    gtk_box_append(GTK_BOX(sidebar), shortcuts);
+
     /* Version */
     GtkWidget *ver = gtk_label_new("Version " APP_VERSION);
     gtk_widget_add_css_class(ver, "sidebar-version");
@@ -1374,8 +1571,11 @@ void ui_build_window(AppData *app) {
     ui_refresh_vm_list(app);
     ui_refresh_ct_list(app);
 
-    /* Auto-refresh timer for dashboard */
-    app->refresh_timer = g_timeout_add(REFRESH_INTERVAL, ui_auto_refresh, app);
+    /* Auto-refresh timer for dashboard (use settings interval) */
+    int interval = app->settings.loaded ? app->settings.refresh_interval_ms : REFRESH_INTERVAL;
+    if (app->settings.auto_refresh) {
+        app->refresh_timer = g_timeout_add(interval, ui_auto_refresh, app);
+    }
 
     gtk_window_present(GTK_WINDOW(app->window));
 }

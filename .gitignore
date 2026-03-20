@@ -1,0 +1,24 @@
+# Build artifacts
+vmmanager
+*.o
+*.d
+
+# Test binaries
+create_ct_test
+create_ct_test2
+create_ct_test3
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.kilocodemodes
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (user-specific)
+*.json.bak

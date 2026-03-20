@@ -3,6 +3,7 @@
  */
 
 #include "../include/vmmanager.h"
+#include <sys/wait.h>
 
 /* ── Additional CSS for dialogs and loading ─────────────────── */
 static const char *DIALOG_CSS =
@@ -370,6 +371,24 @@ static void add_section_header(GtkWidget *box, const char *title) {
     gtk_box_append(GTK_BOX(box), lbl);
 }
 
+/* ── Detail dialog action context and callbacks ────────────── */
+typedef struct { AppData *app; char name[256]; } DetailActionCtx;
+
+static void on_detail_vm_console(gpointer data) {
+    DetailActionCtx *ctx = data;
+    ui_open_vm_console(ctx->app, ctx->name);
+}
+
+static void on_detail_vm_snapshot(gpointer data) {
+    DetailActionCtx *ctx = data;
+    ui_show_snapshot_dialog(ctx->app, ctx->name);
+}
+
+static void on_detail_ct_console(gpointer data) {
+    DetailActionCtx *ctx = data;
+    ui_open_ct_console(ctx->app, ctx->name);
+}
+
 void ui_show_vm_details_dialog(AppData *app, VmInfo *vm) {
     if (!vm) return;
     apply_dialog_css();
@@ -432,18 +451,26 @@ void ui_show_vm_details_dialog(AppData *app, VmInfo *vm) {
     
     GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     
+    /* Create context for detail dialog buttons */
+    DetailActionCtx *dctx = g_new0(DetailActionCtx, 1);
+    dctx->app = app;
+    g_strlcpy(dctx->name, vm->name, sizeof(dctx->name));
+    g_object_set_data_full(G_OBJECT(dialog), "detail-ctx", dctx, g_free);
+
     if (vm->state == VM_STATE_RUNNING) {
         GtkWidget *console_btn = gtk_button_new_with_label("Open Console");
         gtk_widget_add_css_class(console_btn, "btn-action");
         gtk_widget_add_css_class(console_btn, "btn-create");
-        // TODO: Connect to console opening
+        g_signal_connect_swapped(console_btn, "clicked",
+            G_CALLBACK(on_detail_vm_console), dctx);
         gtk_box_append(GTK_BOX(btn_row), console_btn);
     }
-    
+
     GtkWidget *snapshot_btn = gtk_button_new_with_label("Snapshots");
     gtk_widget_add_css_class(snapshot_btn, "btn-action");
     gtk_widget_add_css_class(snapshot_btn, "btn-reboot");
-    // TODO: Connect to snapshot dialog
+    g_signal_connect_swapped(snapshot_btn, "clicked",
+        G_CALLBACK(on_detail_vm_snapshot), dctx);
     gtk_box_append(GTK_BOX(btn_row), snapshot_btn);
     
     gtk_box_append(GTK_BOX(main_box), btn_row);
@@ -505,9 +532,7 @@ void ui_show_ct_details_dialog(AppData *app, CtInfo *ct) {
     
     /* Basic info section */
     add_section_header(main_box, "BASIC INFORMATION");
-    
-    char buf[256];
-    
+
     add_detail_row(main_box, "Type", ct->type[0] ? ct->type : "container");
     add_detail_row(main_box, "State", ct_state_str(ct->state));
     add_detail_row(main_box, "IP Address", ct->ipv4[0] ? ct->ipv4 : "Not assigned");
@@ -520,10 +545,16 @@ void ui_show_ct_details_dialog(AppData *app, CtInfo *ct) {
     GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     
     if (ct->state == CT_STATE_RUNNING) {
+        DetailActionCtx *dctx = g_new0(DetailActionCtx, 1);
+        dctx->app = app;
+        g_strlcpy(dctx->name, ct->name, sizeof(dctx->name));
+        g_object_set_data_full(G_OBJECT(dialog), "detail-ctx", dctx, g_free);
+
         GtkWidget *console_btn = gtk_button_new_with_label("Open Shell");
         gtk_widget_add_css_class(console_btn, "btn-action");
         gtk_widget_add_css_class(console_btn, "btn-create");
-        // TODO: Connect to console opening
+        g_signal_connect_swapped(console_btn, "clicked",
+            G_CALLBACK(on_detail_ct_console), dctx);
         gtk_box_append(GTK_BOX(btn_row), console_btn);
     }
     
@@ -566,15 +597,37 @@ typedef struct {
 static void on_settings_save(GtkButton *btn, gpointer data) {
     (void)btn;
     SettingsCtx *ctx = data;
-    
-    /* Update settings from UI */
-    ctx->app->stats.cpu_usage_percent = 0; // Just to access app
-    
-    /* Save to config file */
+
+    /* Read values from UI into settings */
+    AppSettings *s = &ctx->app->settings;
+    s->refresh_interval_ms = gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(ctx->refresh_spin)) * 1000;
+    s->confirm_destructive_actions = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(ctx->confirm_check));
+    s->auto_refresh = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(ctx->auto_refresh_check));
+    s->default_vcpus = gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(ctx->vcpu_spin));
+    s->default_ram_mb = gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(ctx->ram_spin));
+    s->default_disk_gb = gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(ctx->disk_spin));
+    const char *img = gtk_editable_get_text(GTK_EDITABLE(ctx->image_entry));
+    if (img) strncpy(s->default_image, img, sizeof(s->default_image) - 1);
+
+    /* Update refresh timer */
+    if (ctx->app->refresh_timer) {
+        g_source_remove(ctx->app->refresh_timer);
+        ctx->app->refresh_timer = 0;
+    }
+    if (s->auto_refresh) {
+        ctx->app->refresh_timer = g_timeout_add(
+            s->refresh_interval_ms, ui_auto_refresh, ctx->app);
+    }
+
     settings_save(ctx->app);
-    
     app_log(ctx->app, "INFO", "Settings saved");
-    
+
     gtk_window_destroy(GTK_WINDOW(ctx->dialog));
     g_free(ctx);
 }
@@ -620,8 +673,8 @@ void ui_show_settings_dialog(AppData *app) {
     gtk_box_append(GTK_BOX(refresh_box), refresh_lbl);
     
     ctx->refresh_spin = gtk_spin_button_new_with_range(1, 60, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->refresh_spin), 
-                               REFRESH_INTERVAL / 1000);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->refresh_spin),
+                               app->settings.refresh_interval_ms / 1000);
     gtk_box_append(GTK_BOX(refresh_box), ctx->refresh_spin);
     gtk_box_append(GTK_BOX(main_box), refresh_box);
     
@@ -629,14 +682,16 @@ void ui_show_settings_dialog(AppData *app) {
     ctx->confirm_check = gtk_check_button_new_with_label(
         "Confirm destructive actions (delete, force stop)");
     gtk_widget_add_css_class(ctx->confirm_check, "settings-label");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(ctx->confirm_check), TRUE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ctx->confirm_check),
+                               app->settings.confirm_destructive_actions);
     gtk_box_append(GTK_BOX(main_box), ctx->confirm_check);
-    
+
     /* Auto refresh */
     ctx->auto_refresh_check = gtk_check_button_new_with_label(
         "Auto-refresh dashboard");
     gtk_widget_add_css_class(ctx->auto_refresh_check, "settings-label");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(ctx->auto_refresh_check), TRUE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ctx->auto_refresh_check),
+                               app->settings.auto_refresh);
     gtk_box_append(GTK_BOX(main_box), ctx->auto_refresh_check);
     
     /* VM Defaults section */
@@ -650,31 +705,31 @@ void ui_show_settings_dialog(AppData *app) {
     gtk_box_append(GTK_BOX(vcpu_box), vcpu_lbl);
     
     ctx->vcpu_spin = gtk_spin_button_new_with_range(1, 16, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->vcpu_spin), 2);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->vcpu_spin), app->settings.default_vcpus);
     gtk_box_append(GTK_BOX(vcpu_box), ctx->vcpu_spin);
     gtk_box_append(GTK_BOX(main_box), vcpu_box);
-    
+
     /* Default RAM */
     GtkWidget *ram_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     GtkWidget *ram_lbl = gtk_label_new("Default RAM (MB):");
     gtk_widget_add_css_class(ram_lbl, "settings-label");
     gtk_widget_set_hexpand(ram_lbl, TRUE);
     gtk_box_append(GTK_BOX(ram_box), ram_lbl);
-    
+
     ctx->ram_spin = gtk_spin_button_new_with_range(256, 32768, 256);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->ram_spin), 2048);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->ram_spin), app->settings.default_ram_mb);
     gtk_box_append(GTK_BOX(ram_box), ctx->ram_spin);
     gtk_box_append(GTK_BOX(main_box), ram_box);
-    
+
     /* Default Disk */
     GtkWidget *disk_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     GtkWidget *disk_lbl = gtk_label_new("Default Disk (GB):");
     gtk_widget_add_css_class(disk_lbl, "settings-label");
     gtk_widget_set_hexpand(disk_lbl, TRUE);
     gtk_box_append(GTK_BOX(disk_box), disk_lbl);
-    
+
     ctx->disk_spin = gtk_spin_button_new_with_range(5, 500, 5);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->disk_spin), 20);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ctx->disk_spin), app->settings.default_disk_gb);
     gtk_box_append(GTK_BOX(disk_box), ctx->disk_spin);
     gtk_box_append(GTK_BOX(main_box), disk_box);
     
@@ -688,7 +743,8 @@ void ui_show_settings_dialog(AppData *app) {
     
     ctx->image_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(ctx->image_entry), "ubuntu/24.04");
-    gtk_editable_set_text(GTK_EDITABLE(ctx->image_entry), "ubuntu/24.04");
+    gtk_editable_set_text(GTK_EDITABLE(ctx->image_entry),
+        app->settings.default_image[0] ? app->settings.default_image : "ubuntu/24.04");
     gtk_box_append(GTK_BOX(main_box), ctx->image_entry);
     
     GtkWidget *hint = gtk_label_new("Examples: ubuntu/24.04, debian/12, alpine/3.19");
@@ -726,105 +782,92 @@ void ui_show_settings_dialog(AppData *app) {
 /* ──────────────────────────────────────────────────────────── */
 
 void settings_load(AppData *app) {
-    /* Default settings */
-    static AppSettings default_settings = {
-        .refresh_interval_ms = REFRESH_INTERVAL,
-        .confirm_destructive_actions = true,
-        .auto_refresh = true,
-        .default_iso_path = "",
-        .default_image = "ubuntu/24.04",
-        .default_vcpus = 2,
-        .default_ram_mb = 2048,
-        .default_disk_gb = 20
-    };
-    
+    /* Set defaults first */
+    AppSettings *s = &app->settings;
+    s->refresh_interval_ms = REFRESH_INTERVAL;
+    s->confirm_destructive_actions = true;
+    s->auto_refresh = true;
+    s->default_iso_path[0] = '\0';
+    strncpy(s->default_image, "ubuntu/24.04", sizeof(s->default_image) - 1);
+    s->default_vcpus = 2;
+    s->default_ram_mb = 2048;
+    s->default_disk_gb = 20;
+
     /* Try to load from config file */
     char config_path[512];
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
-    
+
     snprintf(config_path, sizeof(config_path), "%s/.config/vmmanager/settings.json", home);
-    
+
     GFile *file = g_file_new_for_path(config_path);
     if (g_file_query_exists(file, NULL)) {
         GError *error = NULL;
         char *contents = NULL;
         gsize length = 0;
-        
+
         if (g_file_load_contents(file, NULL, &contents, &length, NULL, &error)) {
             JsonParser *parser = json_parser_new();
             if (json_parser_load_from_data(parser, contents, length, NULL)) {
                 JsonObject *obj = json_node_get_object(json_parser_get_root(parser));
-                
-                /* Parse settings */
-                if (json_object_has_member(obj, "refresh_interval")) {
-                    default_settings.refresh_interval_ms = 
-                        json_object_get_int_member(obj, "refresh_interval") * 1000;
-                }
-                if (json_object_has_member(obj, "confirm_destructive")) {
-                    default_settings.confirm_destructive_actions = 
-                        json_object_get_boolean_member(obj, "confirm_destructive");
-                }
-                if (json_object_has_member(obj, "auto_refresh")) {
-                    default_settings.auto_refresh = 
-                        json_object_get_boolean_member(obj, "auto_refresh");
-                }
-                if (json_object_has_member(obj, "default_vcpus")) {
-                    default_settings.default_vcpus = 
-                        json_object_get_int_member(obj, "default_vcpus");
-                }
-                if (json_object_has_member(obj, "default_ram_mb")) {
-                    default_settings.default_ram_mb = 
-                        json_object_get_int_member(obj, "default_ram_mb");
-                }
-                if (json_object_has_member(obj, "default_disk_gb")) {
-                    default_settings.default_disk_gb = 
-                        json_object_get_int_member(obj, "default_disk_gb");
-                }
+
+                if (json_object_has_member(obj, "refresh_interval"))
+                    s->refresh_interval_ms = json_object_get_int_member(obj, "refresh_interval") * 1000;
+                if (json_object_has_member(obj, "confirm_destructive"))
+                    s->confirm_destructive_actions = json_object_get_boolean_member(obj, "confirm_destructive");
+                if (json_object_has_member(obj, "auto_refresh"))
+                    s->auto_refresh = json_object_get_boolean_member(obj, "auto_refresh");
+                if (json_object_has_member(obj, "default_vcpus"))
+                    s->default_vcpus = json_object_get_int_member(obj, "default_vcpus");
+                if (json_object_has_member(obj, "default_ram_mb"))
+                    s->default_ram_mb = json_object_get_int_member(obj, "default_ram_mb");
+                if (json_object_has_member(obj, "default_disk_gb"))
+                    s->default_disk_gb = json_object_get_int_member(obj, "default_disk_gb");
                 if (json_object_has_member(obj, "default_image")) {
                     const char *img = json_object_get_string_member(obj, "default_image");
-                    if (img) strncpy(default_settings.default_image, img, 127);
+                    if (img) strncpy(s->default_image, img, sizeof(s->default_image) - 1);
                 }
-                
-                g_object_unref(parser);
+
+                app_log(app, "INFO", "Settings loaded from %s", config_path);
             }
+            g_object_unref(parser);
             g_free(contents);
         }
         if (error) g_error_free(error);
     }
     g_object_unref(file);
-    
-    /* Store settings in app data - we'll add this to AppData later */
-    (void)app; /* For now, just use defaults */
+    s->loaded = true;
 }
 
 void settings_save(AppData *app) {
     char config_path[512];
     const char *home = getenv("HOME");
     if (!home) return;
-    
+
+    AppSettings *s = &app->settings;
+
     snprintf(config_path, sizeof(config_path), "%s/.config/vmmanager", home);
     g_mkdir_with_parents(config_path, 0755);
-    
+
     snprintf(config_path, sizeof(config_path), "%s/.config/vmmanager/settings.json", home);
-    
-    /* Build JSON */
+
+    /* Build JSON from actual settings */
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "refresh_interval");
-    json_builder_add_int_value(builder, REFRESH_INTERVAL / 1000);
+    json_builder_add_int_value(builder, s->refresh_interval_ms / 1000);
     json_builder_set_member_name(builder, "confirm_destructive");
-    json_builder_add_boolean_value(builder, true);
+    json_builder_add_boolean_value(builder, s->confirm_destructive_actions);
     json_builder_set_member_name(builder, "auto_refresh");
-    json_builder_add_boolean_value(builder, true);
+    json_builder_add_boolean_value(builder, s->auto_refresh);
     json_builder_set_member_name(builder, "default_vcpus");
-    json_builder_add_int_value(builder, 2);
+    json_builder_add_int_value(builder, s->default_vcpus);
     json_builder_set_member_name(builder, "default_ram_mb");
-    json_builder_add_int_value(builder, 2048);
+    json_builder_add_int_value(builder, s->default_ram_mb);
     json_builder_set_member_name(builder, "default_disk_gb");
-    json_builder_add_int_value(builder, 20);
+    json_builder_add_int_value(builder, s->default_disk_gb);
     json_builder_set_member_name(builder, "default_image");
-    json_builder_add_string_value(builder, "ubuntu/24.04");
+    json_builder_add_string_value(builder, s->default_image);
     json_builder_end_object(builder);
     
     JsonGenerator *gen = json_generator_new();
@@ -895,25 +938,25 @@ void ui_setup_shortcuts(AppData *app) {
     gtk_widget_insert_action_group(app->window, "app", G_ACTION_GROUP(group));
     
     /* Create shortcuts */
-    GtkShortcutController *controller = gtk_shortcut_controller_new();
+    GtkEventController *controller = gtk_shortcut_controller_new();
     
-    gtk_shortcut_controller_add_shortcut(controller,
+    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER(controller),
         gtk_shortcut_new(gtk_keyval_trigger_new(GDK_KEY_F5, 0),
                          gtk_named_action_new("app.refresh")));
-    
-    gtk_shortcut_controller_add_shortcut(controller,
+
+    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER(controller),
         gtk_shortcut_new(gtk_keyval_trigger_new(GDK_KEY_comma, GDK_CONTROL_MASK),
                          gtk_named_action_new("app.settings")));
-    
-    gtk_shortcut_controller_add_shortcut(controller,
+
+    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER(controller),
         gtk_shortcut_new(gtk_keyval_trigger_new(GDK_KEY_n, GDK_CONTROL_MASK | GDK_SHIFT_MASK),
                          gtk_named_action_new("app.new-vm")));
-    
-    gtk_shortcut_controller_add_shortcut(controller,
+
+    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER(controller),
         gtk_shortcut_new(gtk_keyval_trigger_new(GDK_KEY_n, GDK_CONTROL_MASK),
                          gtk_named_action_new("app.new-ct")));
-    
-    gtk_widget_add_controller(app->window, GTK_EVENT_CONTROLLER(controller));
+
+    gtk_widget_add_controller(app->window, controller);
     
     g_object_unref(group);
 }
@@ -922,26 +965,39 @@ void ui_setup_shortcuts(AppData *app) {
 /* ── Console Opening ───────────────────────────────────────── */
 /* ──────────────────────────────────────────────────────────── */
 
+/* ── Safe process launcher using fork/exec ──────────────────── */
+static bool launch_process(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        /* Child: detach from parent */
+        setsid();
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    /* Parent: don't wait - it's a GUI process */
+    return true;
+}
+
 void ui_open_vm_console(AppData *app, const char *vm_name) {
     if (!app->virt_conn) {
-        ui_show_error_dialog(app, "Error", 
+        ui_show_error_dialog(app, "Error",
                              "Cannot open console: libvirt not connected",
                              "Ensure libvirtd is running");
         return;
     }
-    
-    /* Try to launch virt-viewer */
-    char command[512];
-    snprintf(command, sizeof(command), "virt-viewer --connect qemu:///system %s &", vm_name);
-    
-    int result = system(command);
-    if (result != 0) {
+
+    const char *argv[] = {
+        "virt-viewer", "--connect", "qemu:///system", vm_name, NULL
+    };
+
+    if (launch_process(argv)) {
+        app_log(app, "INFO", "Opened console for VM '%s'", vm_name);
+    } else {
         ui_show_error_dialog(app, "Error",
                              "Failed to launch VM console",
                              "Ensure virt-viewer is installed: sudo apt install virt-viewer");
         app_log(app, "WARN", "Failed to launch console for VM '%s'", vm_name);
-    } else {
-        app_log(app, "INFO", "Opened console for VM '%s'", vm_name);
     }
 }
 
@@ -952,33 +1008,23 @@ void ui_open_ct_console(AppData *app, const char *ct_name) {
                              "Ensure Incus is installed and socket is accessible");
         return;
     }
-    
-    /* Try to launch terminal with incus exec */
-    char command[512];
-    
-    /* Try different terminals */
-    const char *terminals[] = {
-        "gnome-terminal -- incus exec %s -- /bin/bash",
-        "konsole -e incus exec %s -- /bin/bash",
-        "xterm -e incus exec %s -- /bin/bash",
-        NULL
+
+    /* Try different terminal emulators with fork/exec */
+    const char *terminals[][8] = {
+        {"gnome-terminal", "--", "incus", "exec", ct_name, "--", "/bin/bash", NULL},
+        {"konsole", "-e", "incus", "exec", ct_name, "--", "/bin/bash", NULL},
+        {"xterm", "-e", "incus", "exec", ct_name, "--", "/bin/bash", NULL},
     };
-    
-    bool launched = false;
-    for (int i = 0; terminals[i]; i++) {
-        snprintf(command, sizeof(command), terminals[i], ct_name);
-        if (system(command) == 0) {
-            launched = true;
-            break;
+
+    for (int i = 0; i < 3; i++) {
+        if (launch_process(terminals[i])) {
+            app_log(app, "INFO", "Opened shell for container '%s'", ct_name);
+            return;
         }
     }
-    
-    if (!launched) {
-        ui_show_error_dialog(app, "Error",
-                             "Failed to launch container shell",
-                             "Install a terminal emulator (gnome-terminal, konsole, or xterm)");
-        app_log(app, "WARN", "Failed to launch shell for container '%s'", ct_name);
-    } else {
-        app_log(app, "INFO", "Opened shell for container '%s'", ct_name);
-    }
+
+    ui_show_error_dialog(app, "Error",
+                         "Failed to launch container shell",
+                         "Install a terminal emulator (gnome-terminal, konsole, or xterm)");
+    app_log(app, "WARN", "Failed to launch shell for container '%s'", ct_name);
 }

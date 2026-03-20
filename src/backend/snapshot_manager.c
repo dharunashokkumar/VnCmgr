@@ -218,65 +218,103 @@ typedef struct {
     GtkWidget  *name_entry;
 } SnapshotCtx;
 
+typedef struct {
+    SnapshotCtx *sctx;
+    char         snap_name[128];
+} SnapAction;
+
+static void refresh_snapshot_list(SnapshotCtx *ctx);
+
+static void snap_action_free(gpointer data, GClosure *closure) {
+    (void)closure;
+    g_free(data);
+}
+
+static void on_snapshot_revert(GtkButton *btn, gpointer data) {
+    (void)btn;
+    SnapAction *sa = data;
+    if (vm_snapshot_revert(sa->sctx->app, sa->sctx->vm_name, sa->snap_name)) {
+        refresh_snapshot_list(sa->sctx);
+    }
+}
+
+static void on_snapshot_delete(GtkButton *btn, gpointer data) {
+    (void)btn;
+    SnapAction *sa = data;
+    if (vm_snapshot_delete(sa->sctx->app, sa->sctx->vm_name, sa->snap_name)) {
+        refresh_snapshot_list(sa->sctx);
+    }
+}
+
 static void refresh_snapshot_list(SnapshotCtx *ctx) {
     /* Clear existing list */
     GtkWidget *child;
     while ((child = gtk_widget_get_first_child(ctx->list_box)))
         gtk_box_remove(GTK_BOX(ctx->list_box), child);
-    
+
     /* Get snapshots */
     int count = 0;
     VmSnapshot *snapshots = vm_snapshot_list(ctx->app, ctx->vm_name, &count);
-    
+
     if (count == 0) {
         GtkWidget *empty = gtk_label_new("No snapshots found");
         gtk_widget_add_css_class(empty, "section-subtitle");
         gtk_box_append(GTK_BOX(ctx->list_box), empty);
         return;
     }
-    
+
     for (int i = 0; i < count; i++) {
         GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
         gtk_widget_add_css_class(row, "resource-row");
-        
+
         /* Info */
         GtkWidget *info = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_widget_set_hexpand(info, TRUE);
-        
+
         GtkWidget *name = gtk_label_new(snapshots[i].name);
         gtk_widget_add_css_class(name, "resource-name");
         gtk_label_set_xalign(GTK_LABEL(name), 0);
         gtk_box_append(GTK_BOX(info), name);
-        
+
         char detail[128];
-        snprintf(detail, sizeof(detail), "%s • %s", 
+        snprintf(detail, sizeof(detail), "%s • %s",
                  snapshots[i].state, snapshots[i].created_at);
         GtkWidget *detail_lbl = gtk_label_new(detail);
         gtk_widget_add_css_class(detail_lbl, "resource-detail");
         gtk_label_set_xalign(GTK_LABEL(detail_lbl), 0);
         gtk_box_append(GTK_BOX(info), detail_lbl);
-        
+
         gtk_box_append(GTK_BOX(row), info);
-        
+
         /* Actions */
         GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-        
+
+        SnapAction *revert_data = g_new0(SnapAction, 1);
+        revert_data->sctx = ctx;
+        strncpy(revert_data->snap_name, snapshots[i].name, sizeof(revert_data->snap_name) - 1);
+
         GtkWidget *revert_btn = gtk_button_new_with_label("Revert");
         gtk_widget_add_css_class(revert_btn, "btn-action");
         gtk_widget_add_css_class(revert_btn, "btn-start");
-        // TODO: Connect revert action
+        g_signal_connect_data(revert_btn, "clicked",
+            G_CALLBACK(on_snapshot_revert), revert_data, (GClosureNotify)snap_action_free, 0);
         gtk_box_append(GTK_BOX(btn_box), revert_btn);
-        
+
+        SnapAction *delete_data = g_new0(SnapAction, 1);
+        delete_data->sctx = ctx;
+        strncpy(delete_data->snap_name, snapshots[i].name, sizeof(delete_data->snap_name) - 1);
+
         GtkWidget *delete_btn = gtk_button_new_with_label("Delete");
         gtk_widget_add_css_class(delete_btn, "btn-action");
         gtk_widget_add_css_class(delete_btn, "btn-delete");
-        // TODO: Connect delete action
+        g_signal_connect_data(delete_btn, "clicked",
+            G_CALLBACK(on_snapshot_delete), delete_data, (GClosureNotify)snap_action_free, 0);
         gtk_box_append(GTK_BOX(btn_box), delete_btn);
-        
+
         gtk_box_append(GTK_BOX(row), btn_box);
         gtk_box_append(GTK_BOX(ctx->list_box), row);
     }
-    
+
     free(snapshots);
 }
 
@@ -354,9 +392,8 @@ void ui_show_snapshot_dialog(AppData *app, const char *vm_name) {
     
     GtkWidget *close_btn = gtk_button_new_with_label("Close");
     gtk_widget_add_css_class(close_btn, "btn-action");
-    gtk_widget_add_css_class(close_btn, "btn-reboot");
+    gtk_widget_add_css_class(close_btn, "btn-stop");
     g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_window_destroy), dialog);
-    g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(g_free), ctx);
     gtk_box_append(GTK_BOX(close_row), close_btn);
     
     gtk_box_append(GTK_BOX(main_box), close_row);

@@ -7,6 +7,7 @@
 #   make run      - build and run
 #   make install  - install to /usr/local/bin
 #   make debug    - build with debug symbols
+#   make test     - build test programs
 
 CC       = gcc
 TARGET   = vmmanager
@@ -23,29 +24,29 @@ SOURCES  = src/main.c \
 
 # Compiler flags
 PKG_DEPS = gtk4 libvirt libcurl json-glib-1.0
-CFLAGS   = -Wall -Wextra -Iinclude $(shell pkg-config --cflags $(PKG_DEPS))
+CFLAGS   = -Wall -Wextra -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags $(PKG_DEPS))
 LDFLAGS  = $(shell pkg-config --libs $(PKG_DEPS))
 
 # Release build (default)
 CFLAGS  += -O2
 
-.PHONY: all clean run install debug
+.PHONY: all clean run install debug test uninstall
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
+$(TARGET): $(SOURCES) include/vmmanager.h
 	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
 	@echo ""
-	@echo "╔══════════════════════════════════════╗"
-	@echo "║  ✅ VMManager built successfully!    ║"
-	@echo "║  Run with: ./vmmanager               ║"
-	@echo "╚══════════════════════════════════════╝"
+	@echo "  VMManager built successfully!"
+	@echo "  Run with: ./vmmanager"
+	@echo ""
 
 debug: CFLAGS += -g -DDEBUG -O0
-debug: $(TARGET)
+debug: clean $(TARGET)
 
 clean:
 	rm -f $(TARGET)
+	rm -f tests/create_ct_test tests/create_ct_test2 tests/create_ct_test3
 
 run: $(TARGET)
 	./$(TARGET)
@@ -53,3 +54,13 @@ run: $(TARGET)
 install: $(TARGET)
 	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
 	@echo "Installed to /usr/local/bin/$(TARGET)"
+
+uninstall:
+	rm -f /usr/local/bin/$(TARGET)
+	@echo "Removed /usr/local/bin/$(TARGET)"
+
+test:
+	$(CC) -Wall -Iinclude tests/create_ct_test.c -o tests/create_ct_test $(LDFLAGS) $(shell pkg-config --cflags $(PKG_DEPS))
+	$(CC) -Wall -Iinclude tests/create_ct_test2.c -o tests/create_ct_test2 $(LDFLAGS) $(shell pkg-config --cflags $(PKG_DEPS))
+	$(CC) -Wall -Iinclude tests/create_ct_test3.c -o tests/create_ct_test3 $(LDFLAGS) $(shell pkg-config --cflags $(PKG_DEPS))
+	@echo "Test binaries built in tests/"
