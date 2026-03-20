@@ -1,342 +1,251 @@
 # Contributing to VMManager
 
-Thank you for your interest in contributing to VMManager! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to VMManager! This guide will help you get started.
 
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
-- [Project Structure](#project-structure)
-- [Coding Standards](#coding-standards)
+- [Project Architecture](#project-architecture)
 - [Making Changes](#making-changes)
+- [Coding Standards](#coding-standards)
 - [Commit Messages](#commit-messages)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Bugs](#reporting-bugs)
 - [Requesting Features](#requesting-features)
-- [Security Vulnerabilities](#security-vulnerabilities)
-
----
 
 ## Code of Conduct
 
-This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to the project maintainers.
-
----
+This project follows our [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
 ## Getting Started
 
-### Prerequisites
-
-- **C compiler:** GCC 11+ or Clang 14+
-- **Build system:** GNU Make
-- **Package manager:** pkg-config
-- **Libraries:** GTK 4, libvirt, libcurl, json-glib
-- **Runtime:** QEMU/KVM, libvirt daemon, optionally Incus/LXD
-
-### First-time Setup
-
 1. **Fork** the repository on GitHub
-2. **Clone** your fork:
+2. **Clone** your fork locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/vmmanager.git
+   git clone https://github.com/YOUR-USERNAME/vmmanager.git
    cd vmmanager
    ```
-3. **Add upstream remote:**
+3. **Add the upstream remote:**
    ```bash
    git remote add upstream https://github.com/TripleETech/vmmanager.git
    ```
-4. **Install dependencies:**
+4. **Create a branch** for your work:
    ```bash
-   # Ubuntu/Debian
-   sudo apt install gcc make pkg-config libgtk-4-dev libvirt-dev \
-       libcurl4-openssl-dev libjson-glib-dev
-
-   # Fedora
-   sudo dnf install gcc make pkgconf-pkg-config gtk4-devel \
-       libvirt-devel libcurl-devel json-glib-devel
+   git checkout -b feature/your-feature-name
    ```
-5. **Build and verify:**
-   ```bash
-   make check-deps
-   make debug
-   ./vmmanager
-   ```
-
----
 
 ## Development Setup
 
-### Debug Build
+### Install Dependencies
 
 ```bash
-make debug     # Builds with -g -O0 -DDEBUG flags
-./vmmanager    # Logs go to stderr
+# Ubuntu/Debian
+sudo apt install gcc make pkg-config libgtk-4-dev libvirt-dev libcurl4-openssl-dev libjson-glib-dev
+
+# Runtime (for testing)
+sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients
 ```
 
-### Running Tests
+### Build
 
 ```bash
-make test      # Build test binaries
-cd tests && bash test_ct.sh  # Run shell-based tests
+make clean && make          # Release build
+make debug                  # Debug build with symbols
+make run                    # Build and run
+make test                   # Build test programs
 ```
 
-### Checking Dependencies
+### Verify Your Setup
 
 ```bash
-make check-deps
+# Check all dependencies are available
+pkg-config --exists gtk4 libvirt libcurl json-glib-1.0 && echo "Ready" || echo "Missing deps"
 ```
 
-### Useful Tools
+## Project Architecture
 
-- **Valgrind** for memory leak detection:
-  ```bash
-  valgrind --leak-check=full ./vmmanager
-  ```
-- **GDB** for debugging:
-  ```bash
-  make debug
-  gdb ./vmmanager
-  ```
-- **GTK Inspector** for UI debugging:
-  ```bash
-  GTK_DEBUG=interactive ./vmmanager
-  ```
-
----
-
-## Project Structure
+VMManager follows a modular C architecture:
 
 ```
 src/
-├── main.c                  # Entry point, logging, app lifecycle
+├── main.c                 # App entry, logging, lifecycle
 ├── ui/
-│   ├── window.c            # Main window, sidebar, all panels
-│   └── dialogs.c           # Dialogs, settings, console, shortcuts
+│   ├── window.c           # Main UI (sidebar, dashboard, panels, CSS)
+│   └── dialogs.c          # Dialogs, settings, loading, shortcuts, console
 ├── backend/
-│   ├── vm_manager.c        # libvirt C API for VMs
-│   ├── ct_manager.c        # Incus REST API for containers
-│   └── snapshot_manager.c  # VM snapshots
+│   ├── vm_manager.c       # libvirt API for QEMU/KVM VMs
+│   ├── ct_manager.c       # Incus/LXD REST API via libcurl
+│   └── snapshot_manager.c # VM snapshot operations
 └── utils/
-    ├── error_handling.c    # Error codes, messages, suggestions
-    └── system_info.c       # CPU/RAM/disk monitoring
+    ├── error_handling.c   # Error codes, mapping, messages
+    └── system_info.c      # /proc-based system monitoring
 ```
 
-### Key Patterns
+**Key design principles:**
+- Single header file (`include/vmmanager.h`) for all declarations
+- `AppData` struct is the central state object passed everywhere
+- UI code never calls system APIs directly — always through backend functions
+- Error handling uses structured `AppError` with codes, messages, and suggestions
+- No `system()` calls — all process spawning uses `fork/exec`
 
-- **AppData** struct (`include/vmmanager.h`) is the central application state — passed everywhere
-- **Error handling** uses `AppError` structs with error codes, messages, and user-facing suggestions
-- **Backend functions** return `bool` for success/failure and log errors via `app_log()`
-- **UI functions** are prefixed with `ui_` and live in `src/ui/`
-- **Backend functions** are prefixed with `vm_`, `ct_`, or `sys_`
+## Making Changes
 
----
+### Before You Start
+
+- Check existing [issues](https://github.com/TripleETech/vmmanager/issues) to avoid duplicate work
+- For large changes, open an issue first to discuss the approach
+- Keep changes focused — one feature or fix per PR
+
+### Development Workflow
+
+1. Sync with upstream:
+   ```bash
+   git fetch upstream
+   git rebase upstream/main
+   ```
+
+2. Make your changes
+
+3. Build and verify:
+   ```bash
+   make clean && make
+   ```
+
+4. Test your changes manually by running the app:
+   ```bash
+   ./vmmanager
+   ```
+
+5. Check for compiler warnings — we compile with `-Wall -Wextra`
 
 ## Coding Standards
 
 ### C Style
 
-- **Standard:** C11 with GNU extensions (`_GNU_SOURCE`)
-- **Indentation:** 4 spaces (no tabs)
-- **Line length:** Soft limit 100 characters
-- **Braces:** Opening brace on same line
-- **Naming:** `snake_case` for functions and variables, `UPPER_CASE` for constants
-- **Pointer style:** `char *ptr` (space before `*`, not after)
+- **Naming:** `snake_case` for functions and variables, `UPPER_CASE` for constants and macros
+- **Indentation:** 4 spaces, no tabs
+- **Braces:** Opening brace on the same line
+- **Line length:** Aim for 100 characters, hard limit at 120
+- **Comments:** Use `/* */` for block comments, `//` is acceptable for inline
 
-### Example
+### Function Conventions
 
 ```c
-/* Good */
+/* ── Section Header ──────────────────────────────── */
 bool vm_start(AppData *app, const char *name) {
-    virDomainPtr dom = find_domain(app, name);
-    if (!dom) {
-        app_log(app, "ERROR", "VM '%s' not found", name);
+    if (!app->virt_conn) {
+        app_log(app, "ERROR", "Not connected");
         return false;
     }
 
-    int ret = virDomainCreate(dom);
-    virDomainFree(dom);
-
-    if (ret < 0) {
-        app_log(app, "ERROR", "Failed to start VM '%s'", name);
-        return false;
-    }
+    // ... implementation
 
     app_log(app, "INFO", "VM '%s' started", name);
     return true;
 }
 ```
 
-### Guidelines
+### Error Handling
 
-1. **Always check return values** from system calls and library functions
-2. **Always free allocated memory** — use `free()`, `g_free()`, `g_object_unref()` as appropriate
-3. **Use `strncpy` with explicit null-termination** — never use `strcpy`
-4. **Use `snprintf` instead of `sprintf`** — always prevent buffer overflows
-5. **Use `fork`/`exec` instead of `system()`** — prevents command injection
-6. **Validate all user input** before passing to system APIs
-7. **Log operations** using `app_log()` with appropriate levels: `INFO`, `WARN`, `ERROR`
-8. **Handle NULL pointers** at function entry points
-9. **No compiler warnings** — code must compile cleanly with `-Wall -Wextra`
+- Always check return values from library calls
+- Use `app_log()` for logging errors with context
+- Use `AppError` for user-facing errors with suggestions
+- Never silently swallow errors
 
-### Security Requirements
+### Memory Management
 
-- Never use `system()` or `popen()` — use `fork()`/`exec()` family
-- Validate and sanitize all inputs that go into XML, JSON, or system commands
-- Check buffer sizes before string operations
-- Don't hardcode paths — use runtime detection
-- Don't store credentials in source code
+- Check `malloc`/`calloc` return values
+- Free resources in reverse order of allocation
+- Use `g_free()` for GLib-allocated memory, `free()` for stdlib
+- Null pointers after freeing when the pointer remains in scope
 
----
+### Security
 
-## Making Changes
-
-### Branching Strategy
-
-- `main` — stable, release-ready code
-- `feature/*` — new features
-- `fix/*` — bug fixes
-- `docs/*` — documentation changes
-
-### Workflow
-
-1. **Sync with upstream:**
-   ```bash
-   git fetch upstream
-   git checkout main
-   git merge upstream/main
-   ```
-
-2. **Create a feature branch:**
-   ```bash
-   git checkout -b feature/my-feature
-   ```
-
-3. **Make your changes** following the coding standards above
-
-4. **Build and test:**
-   ```bash
-   make clean && make
-   ./vmmanager  # Manual testing
-   make test    # Run tests
-   ```
-
-5. **Check for warnings:**
-   ```bash
-   make clean && make 2>&1 | grep -i warning
-   ```
-
----
+- Never use `system()` — use `fork/exec` for process spawning
+- Validate all user input (VM names, paths, etc.)
+- Use `snprintf` instead of `sprintf`
+- Use `strncpy` with explicit null termination
 
 ## Commit Messages
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+Follow conventional commit style:
 
 ```
-<type>(<scope>): <description>
+<type>: <short description>
 
-[optional body]
-
-[optional footer]
+<optional longer description>
 ```
 
-### Types
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `refactor`: Code restructuring without behavior change
+- `docs`: Documentation only
+- `style`: Formatting, no code change
+- `test`: Adding or updating tests
+- `build`: Build system or dependency changes
 
-| Type | Description |
-|------|-------------|
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `docs` | Documentation only |
-| `style` | Code style (formatting, no logic change) |
-| `refactor` | Code refactoring (no feature/fix) |
-| `test` | Adding or updating tests |
-| `build` | Build system or dependencies |
-| `ci` | CI/CD changes |
-| `chore` | Maintenance tasks |
-
-### Examples
-
+**Examples:**
 ```
-feat(vm): add VM cloning functionality
-fix(ct): handle timeout when creating large containers
-docs: update installation instructions for Fedora
-build: add Flatpak build target to Makefile
+feat: add VM disk resize support
+fix: handle null libvirt connection in snapshot list
+docs: add Fedora installation instructions
+refactor: extract CSS into separate resource file
 ```
-
----
 
 ## Pull Request Process
 
-1. **Ensure your code compiles** without warnings (`make clean && make`)
-2. **Test manually** — create/start/stop VMs and containers if your changes affect those paths
-3. **Update documentation** if you change user-facing behavior
-4. **Update CHANGELOG.md** under the `[Unreleased]` section
-5. **Fill out the PR template** completely
-6. **Request review** from a maintainer
+1. **Update your branch** with the latest upstream changes
+2. **Ensure clean build** with no warnings: `make clean && make`
+3. **Write a clear PR description** explaining:
+   - What the change does
+   - Why it's needed
+   - How to test it
+4. **Link related issues** using "Fixes #123" or "Closes #123"
+5. **Keep PRs small and focused** — easier to review and merge
+6. **Respond to review feedback** promptly
 
-### PR Checklist
+### PR Title Format
 
-- [ ] Code compiles without warnings
-- [ ] Changes tested manually
-- [ ] No security vulnerabilities introduced
-- [ ] Documentation updated (if applicable)
-- [ ] CHANGELOG.md updated
-- [ ] Commit messages follow convention
-
-### Review Process
-
-- At least one maintainer approval is required
-- CI must pass (compilation check)
-- Feedback will be given within 1 week
-- Address review comments or explain why you disagree
-
----
+Use the same format as commit messages:
+```
+feat: add VM disk resize support
+fix: container stop timeout not respected
+```
 
 ## Reporting Bugs
 
-Use the [Bug Report template](https://github.com/TripleETech/vmmanager/issues/new?template=bug_report.yml) and include:
+Use the [Bug Report template](.github/ISSUE_TEMPLATE/bug_report.md) and include:
 
-1. **Description** of the bug
-2. **Steps to reproduce**
-3. **Expected behavior**
-4. **Actual behavior**
-5. **Environment** (distro, GTK version, libvirt version)
-6. **Logs** from stderr output
-
----
+1. **System info:** distro, GTK version, libvirt version
+2. **Steps to reproduce** the issue
+3. **Expected behavior** vs. **actual behavior**
+4. **Log output** from the Activity Log panel or stderr
+5. **Screenshots** if it's a UI issue
 
 ## Requesting Features
 
-Use the [Feature Request template](https://github.com/TripleETech/vmmanager/issues/new?template=feature_request.yml) and include:
+Use the [Feature Request template](.github/ISSUE_TEMPLATE/feature_request.md) and include:
 
-1. **Problem** you're trying to solve
-2. **Proposed solution**
-3. **Alternatives** you've considered
-4. **Priority** and use case
-
----
-
-## Security Vulnerabilities
-
-**Do not open a public issue** for security vulnerabilities. Instead, follow the process in [SECURITY.md](SECURITY.md).
-
----
+1. **Problem statement** — what's missing or painful
+2. **Proposed solution** — how you'd like it to work
+3. **Alternatives considered**
+4. **Additional context** — mockups, related tools, etc.
 
 ## Areas Where Help is Needed
 
-We especially welcome contributions in these areas:
+Here are some areas where contributions would be particularly valuable:
 
-- **Flatpak packaging** — making VMManager available on Flathub
-- **Testing** — automated test suite with a proper C testing framework
-- **Accessibility** — ensuring the UI works well with screen readers
-- **Internationalization** — adding i18n/l10n support
-- **Documentation** — tutorials, screenshots, wiki pages
-- **New distro support** — testing and packaging for more Linux distributions
-
----
+- **Packaging:** Flatpak, Snap, AUR, .deb, .rpm packages
+- **Testing:** Unit tests, integration tests with libvirt test driver
+- **Documentation:** User guides, tutorials, translations
+- **UI/UX:** Dark theme, accessibility improvements, responsive layouts
+- **Features:** See the [Roadmap](README.md#roadmap)
 
 ## Questions?
 
-Open a [Discussion](https://github.com/TripleETech/vmmanager/discussions) or reach out to the maintainers. We're happy to help!
+If you have questions about contributing, feel free to open a [Discussion](https://github.com/TripleETech/vmmanager/discussions) or ask in an issue.
 
-Thank you for contributing!
+Thank you for helping make VMManager better!
